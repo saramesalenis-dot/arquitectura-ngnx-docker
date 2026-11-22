@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: backends        # /metrics de cada instancia Flask (directo, sin pasar por Nginx)
+    static_configs:
+      - targets: ["app1:5000", "app2:5000", "app3:5000"]
+
+  - job_name: nginx           # nginx-prometheus-exporter (traduce stub_status)
+    static_configs:
+      - targets: ["nginx-exporter:9113"]
+
+  - job_name: cadvisor        # CPU, memoria, red y disco por contenedor
+    static_configs:
+      - targets: ["cadvisor:8080"]

@@ -1,0 +1,123 @@
+# Proyecto final - Proxy inverso + monitoreo
+# Un solo comando:  docker compose up -d --build
+
+name: lab-proxy
+
+# Plantilla común de los backends (evita repetir configuración 3 veces)
+x-backend: &backend
+  build: ./backend
+  restart: unless-stopped
+  networks: [lab-net]
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+    interval: 5s
+    timeout: 3s
+    retries: 5
+    start_period: 3s
+
+services:
+  app1:
+    <<: *backend
+    environment:
+      SERVER_NAME: "server 1"
+
+  app2:
+    <<: *backend
+    environment:
+      SERVER_NAME: "server 2"
+
+  app3:
+    <<: *backend
+    environment:
+      SERVER_NAME: "server 3"
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    networks: [lab-net]
+    ports:
+      - "${NGINX_PORT:-8080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      app1: { condition: service_healthy }
+      app2: { condition: service_healthy }
+      app3: { condition: service_healthy }
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:${NGINX_EXPORTER_TAG:-1.4.2}
+    restart: unless-stopped
+    networks: [lab-net]
+    command:
+      - "--nginx.scrape-uri=http://nginx:8088/stub_status"
+    depends_on:
+      - nginx
+
+  cadvisor:
+    image: ghcr.io/google/cadvisor:${CADVISOR_TAG:-0.56.2}
+    restart: unless-stopped
+    networks: [lab-net]
+    command:
+      - "--housekeeping_interval=5s"
+      - "--docker_only=true"
+    ports:
+      - "${CADVISOR_PORT:-8081}:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_TAG:-v3.13.5}
+    restart: unless-stopped
+    networks: [lab-net]
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus          # persistencia de métricas
+    depends_on:
+      - nginx-exporter
+      - cadvisor
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_TAG:-12.4.0}
+    restart: unless-stopped
+    networks: [lab-net]
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      # Solo laboratorio local: entra sin usuario y con rol Admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - grafana-data:/var/lib/grafana                                   # persistencia
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro  # datasource + proveedor de dashboards
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro      # dashboard JSON
+    depends_on:
+      - prometheus
+
+  # Opcional: prueba de carga DENTRO de la red Docker (docker compose --profile test run --rm artillery)
+  artillery:
+    image: artilleryio/artillery:latest
+    profiles: ["test"]
+    networks: [lab-net]
+    volumes:
+      - ./tests:/scripts
+    command: run /scripts/performance-test.yml
+    depends_on:
+      - nginx
+
+# Red Docker personalizada compartida por todos los servicios
+networks:
+  lab-net:
+    name: lab-proxy-net
+    driver: bridge
+
+# Volúmenes para persistencia de datos
+volumes:
+  prometheus-data:
+  grafana-data:
